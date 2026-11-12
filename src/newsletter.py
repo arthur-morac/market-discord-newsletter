@@ -469,6 +469,12 @@ def build_discord_payload() -> dict:
             }
         )
 
+    # Add a visible blank line between sections in Discord
+    for field in fields[:-1]:
+        val = field["value"]
+        if len(val) <= 1022:
+            field["value"] = val + "\n\u200b"
+
     embed = {
         "title": (
             f"📈 Weekly Market & Crypto Brief — {now_sf.strftime('%Y-%m-%d')}"

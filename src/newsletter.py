@@ -340,7 +340,7 @@ def build_discord_payload() -> dict:
             push_parts.append(f"{label} {fmt_pct_compact(idx_map[label].week_pct)}")
     if btc:
         push_parts.append(f"BTC {fmt_price(btc.price, '$')} ({fmt_pct_compact(btc.week_pct)})")
-    push_summary = "📊 **Weekly Close** — " + " | ".join(push_parts)
+    push_summary = "@everyone 📊 **Weekly Close** — " + " | ".join(push_parts)
 
     ref = idx_map.get("Nasdaq") or idx_map.get("S&P 500")
     embed_color = 0x2ECC71 if (ref and ref.week_pct >= 0) else 0xE74C3C
@@ -441,6 +441,7 @@ def build_discord_payload() -> dict:
     return {
         "username": "Market Brief",
         "content": push_summary[:2000],
+        "allowed_mentions": {"parse": ["everyone"]},
         "embeds": [embed],
     }
 

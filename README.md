@@ -1,6 +1,6 @@
 # Newsletter Hebdo Bourse & Crypto → Discord
 
-Bot 100 % gratuit hébergé sur **GitHub Actions** qui envoie chaque vendredi à **13h15 heure de San Francisco** (juste après la clôture du Nasdaq) une newsletter structurée sur **Discord** (avec notification push sur téléphone).
+Bot 100 % gratuit hébergé sur **GitHub Actions** qui envoie chaque **lundi, mercredi et vendredi à 13h15 heure de San Francisco** (juste après la clôture du Nasdaq) une newsletter structurée sur **Discord** (avec notification push sur téléphone).
 
 ## Contenu de la newsletter
 - **Notification push résumée** : S&P 500, Nasdaq, CAC 40, Bitcoin.

@@ -188,10 +188,10 @@ def fetch_quotes(
     return results
 
 
-def fetch_rss_headlines(query: str, limit: int = 1) -> list[tuple[str, str]]:
+def fetch_rss_headlines(query: str, limit: int = 1, days: int = 3) -> list[tuple[str, str]]:
     url = (
         f"https://news.google.com/rss/search?"
-        f"q={quote_plus(query)}+when:7d&hl=en-US&gl=US&ceid=US:en"
+        f"q={quote_plus(query)}+when:{days}d&hl=en-US&gl=US&ceid=US:en"
     )
     try:
         resp = requests.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
@@ -309,21 +309,24 @@ def truncate_field(lines: Iterable[str], limit: int = 1024) -> str:
 def build_discord_payload() -> dict:
     now_sf = datetime.now(SF_TZ)
     now_paris = now_sf.astimezone(PARIS_TZ)
+    is_friday = now_sf.weekday() == 4
+    news_days = 7 if is_friday else 3
 
     indices = fetch_quotes(INDICES, currency="pts")
     tech = fetch_quotes(US_TECH_GIANTS, currency="$")
     cac_stocks = fetch_quotes(list(CAC40_TICKERS.items()), currency="€")
     cryptos = fetch_quotes(CRYPTOS, is_crypto=True, currency="$")
 
-    tech_sorted = sorted(tech, key=lambda q: q.week_pct, reverse=True)
-    cac_sorted = sorted(cac_stocks, key=lambda q: q.week_pct, reverse=True)
+    sort_key = (lambda q: q.week_pct) if is_friday else (lambda q: q.day_pct)
+    tech_sorted = sorted(tech, key=sort_key, reverse=True)
+    cac_sorted = sorted(cac_stocks, key=sort_key, reverse=True)
     cac_top3 = cac_sorted[:3]
     cac_flop3 = list(reversed(cac_sorted[-3:])) if len(cac_sorted) >= 3 else []
 
     # Exactly 3 top headlines: 1 US Tech/Markets, 1 CAC 40/Europe, 1 Bitcoin/Crypto
-    us_news = fetch_rss_headlines("Nasdaq Big Tech stock market", limit=1)
-    fr_news = fetch_rss_headlines("CAC 40 Paris stocks", limit=1)
-    crypto_news = fetch_rss_headlines("Bitcoin crypto market", limit=1)
+    us_news = fetch_rss_headlines("Nasdaq Big Tech stock market", limit=1, days=news_days)
+    fr_news = fetch_rss_headlines("CAC 40 Paris stocks", limit=1, days=news_days)
+    crypto_news = fetch_rss_headlines("Bitcoin crypto market", limit=1, days=news_days)
 
     headline_items = (us_news + fr_news + crypto_news)[:3]
     headline_titles = [t for t, _ in headline_items]
@@ -337,30 +340,40 @@ def build_discord_payload() -> dict:
     push_parts = []
     for label in ("S&P 500", "Nasdaq", "CAC 40"):
         if label in idx_map:
-            push_parts.append(f"{label} {fmt_pct_compact(idx_map[label].week_pct)}")
+            pct = idx_map[label].week_pct if is_friday else idx_map[label].day_pct
+            push_parts.append(f"{label} {fmt_pct_compact(pct)}")
     if btc:
-        push_parts.append(f"BTC {fmt_price(btc.price, '$')} ({fmt_pct_compact(btc.week_pct)})")
-    push_summary = "@everyone 📊 **Weekly Close** — " + " | ".join(push_parts)
+        btc_pct = btc.week_pct if is_friday else btc.day_pct
+        push_parts.append(f"BTC {fmt_price(btc.price, '$')} ({fmt_pct_compact(btc_pct)})")
+    prefix = "Weekly Close" if is_friday else "Market Close"
+    push_summary = f"@everyone 📊 **{prefix}** — " + " | ".join(push_parts)
 
     ref = idx_map.get("Nasdaq") or idx_map.get("S&P 500")
-    embed_color = 0x2ECC71 if (ref and ref.week_pct >= 0) else 0xE74C3C
+    ref_pct = (ref.week_pct if is_friday else ref.day_pct) if ref else 0.0
+    embed_color = 0x2ECC71 if ref_pct >= 0 else 0xE74C3C
 
     fields = []
 
     if ai_summary:
         fields.append(
             {
-                "name": "📝 Week in Brief",
+                "name": "📝 Week in Brief" if is_friday else "📝 Market Brief",
                 "value": ai_summary,
                 "inline": False,
             }
         )
 
     if indices:
-        idx_lines = [
-            f"**{q.name}** : `{fmt_price(q.price, q.currency)}` · Weekly {fmt_pct(q.week_pct)} *(1D {fmt_pct_compact(q.day_pct)})*"
-            for q in indices
-        ]
+        if is_friday:
+            idx_lines = [
+                f"**{q.name}** : `{fmt_price(q.price, q.currency)}` · Weekly {fmt_pct(q.week_pct)} *(1D {fmt_pct_compact(q.day_pct)})*"
+                for q in indices
+            ]
+        else:
+            idx_lines = [
+                f"**{q.name}** : `{fmt_price(q.price, q.currency)}` · 1D {fmt_pct(q.day_pct)} *(WTD {fmt_pct_compact(q.week_pct)})*"
+                for q in indices
+            ]
         fields.append(
             {
                 "name": "🌍 Key Indices",
@@ -370,43 +383,72 @@ def build_discord_payload() -> dict:
         )
 
     if tech_sorted:
-        tech_lines = [
-            f"**{q.name}** (`{q.symbol}`) : `{fmt_price(q.price, '$')}` · Weekly {fmt_pct(q.week_pct)} *(1D {fmt_pct_compact(q.day_pct)})*"
-            for q in tech_sorted
-        ]
+        if is_friday:
+            tech_lines = [
+                f"**{q.name}** (`{q.symbol}`) : `{fmt_price(q.price, '$')}` · Weekly {fmt_pct(q.week_pct)} *(1D {fmt_pct_compact(q.day_pct)})*"
+                for q in tech_sorted
+            ]
+            tech_title = "🇺🇸 US Tech Giants (Weekly Ranking)"
+        else:
+            tech_lines = [
+                f"**{q.name}** (`{q.symbol}`) : `{fmt_price(q.price, '$')}` · 1D {fmt_pct(q.day_pct)} *(WTD {fmt_pct_compact(q.week_pct)})*"
+                for q in tech_sorted
+            ]
+            tech_title = "🇺🇸 US Tech Giants (Today's Ranking)"
         fields.append(
             {
-                "name": "🇺🇸 US Tech Giants (Weekly Ranking)",
+                "name": tech_title,
                 "value": truncate_field(tech_lines),
                 "inline": False,
             }
         )
 
     if cac_top3 or cac_flop3:
-        cac_lines = ["**Top 3 Gainers (Weekly)**"]
-        cac_lines.extend(
-            f"• **{q.name}** (`{fmt_price(q.price, '€')}`) : {fmt_pct(q.week_pct)}"
-            for q in cac_top3
-        )
-        if cac_flop3:
-            cac_lines.append("\n**Top 3 Losers (Weekly)**")
+        if is_friday:
+            cac_lines = ["**Top 3 Gainers (Weekly)**"]
             cac_lines.extend(
                 f"• **{q.name}** (`{fmt_price(q.price, '€')}`) : {fmt_pct(q.week_pct)}"
-                for q in cac_flop3
+                for q in cac_top3
             )
+            if cac_flop3:
+                cac_lines.append("\n**Top 3 Losers (Weekly)**")
+                cac_lines.extend(
+                    f"• **{q.name}** (`{fmt_price(q.price, '€')}`) : {fmt_pct(q.week_pct)}"
+                    for q in cac_flop3
+                )
+            cac_title = "🇫🇷 CAC 40 — Weekly Top & Bottom 3"
+        else:
+            cac_lines = ["**Top 3 Gainers (Today)**"]
+            cac_lines.extend(
+                f"• **{q.name}** (`{fmt_price(q.price, '€')}`) : {fmt_pct(q.day_pct)}"
+                for q in cac_top3
+            )
+            if cac_flop3:
+                cac_lines.append("\n**Top 3 Losers (Today)**")
+                cac_lines.extend(
+                    f"• **{q.name}** (`{fmt_price(q.price, '€')}`) : {fmt_pct(q.day_pct)}"
+                    for q in cac_flop3
+                )
+            cac_title = "🇫🇷 CAC 40 — Today's Top & Bottom 3"
         fields.append(
             {
-                "name": "🇫🇷 CAC 40 — Weekly Top & Bottom 3",
+                "name": cac_title,
                 "value": truncate_field(cac_lines),
                 "inline": False,
             }
         )
 
     if cryptos:
-        crypto_lines = [
-            f"**{q.name}** : `{fmt_price(q.price, '$')}` · 7D {fmt_pct(q.week_pct)} *(24h {fmt_pct_compact(q.day_pct)})*"
-            for q in cryptos
-        ]
+        if is_friday:
+            crypto_lines = [
+                f"**{q.name}** : `{fmt_price(q.price, '$')}` · 7D {fmt_pct(q.week_pct)} *(24h {fmt_pct_compact(q.day_pct)})*"
+                for q in cryptos
+            ]
+        else:
+            crypto_lines = [
+                f"**{q.name}** : `{fmt_price(q.price, '$')}` · 24h {fmt_pct(q.day_pct)} *(7D {fmt_pct_compact(q.week_pct)})*"
+                for q in cryptos
+            ]
         fields.append(
             {
                 "name": "🪙 Crypto (24/7)",
@@ -418,14 +460,18 @@ def build_discord_payload() -> dict:
     if headline_items:
         fields.append(
             {
-                "name": "📰 Top 3 Headlines of the Week",
+                "name": "📰 Top 3 Headlines" if not is_friday else "📰 Top 3 Headlines of the Week",
                 "value": format_headlines_field(headline_items),
                 "inline": False,
             }
         )
 
     embed = {
-        "title": f"📈 Weekly Market & Crypto Brief — {now_sf.strftime('%Y-%m-%d')}",
+        "title": (
+            f"📈 Weekly Market & Crypto Brief — {now_sf.strftime('%Y-%m-%d')}"
+            if is_friday
+            else f"📈 Market & Crypto Brief — {now_sf.strftime('%Y-%m-%d')}"
+        ),
         "description": (
             f"US market close summary "
             f"({now_sf.strftime('%I:%M %p')} PT / {now_paris.strftime('%H:%M')} Paris)."

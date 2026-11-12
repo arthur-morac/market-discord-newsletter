@@ -346,7 +346,10 @@ def build_discord_payload() -> dict:
         btc_pct = btc.week_pct if is_friday else btc.day_pct
         push_parts.append(f"BTC {fmt_price(btc.price, '$')} ({fmt_pct_compact(btc_pct)})")
     prefix = "Weekly Close" if is_friday else "Market Close"
-    push_summary = f"@everyone 📊 **{prefix}** — " + " | ".join(push_parts)
+    user_id = os.getenv("DISCORD_USER_ID", "").strip()
+    mention = f"<@{user_id}> " if user_id else ""
+    push_summary = f"{mention}📊 **{prefix}** — " + " | ".join(push_parts)
+    allowed_mentions = {"users": [user_id]} if user_id else {"parse": []}
 
     ref = idx_map.get("Nasdaq") or idx_map.get("S&P 500")
     ref_pct = (ref.week_pct if is_friday else ref.day_pct) if ref else 0.0
@@ -487,7 +490,7 @@ def build_discord_payload() -> dict:
     return {
         "username": "Market Brief",
         "content": push_summary[:2000],
-        "allowed_mentions": {"parse": ["everyone"]},
+        "allowed_mentions": allowed_mentions,
         "embeds": [embed],
     }
 

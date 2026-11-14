@@ -309,7 +309,10 @@ def truncate_field(lines: Iterable[str], limit: int = 1024) -> str:
 def build_discord_payload() -> dict:
     now_sf = datetime.now(SF_TZ)
     now_paris = now_sf.astimezone(PARIS_TZ)
-    is_friday = now_sf.weekday() == 4
+    day_of_week = now_sf.weekday()
+    is_friday = False
+    if day_of_week == 4 or day_of_week == 5 or day_of_week == 6:
+        is_friday = True
     news_days = 7 if is_friday else 3
 
     indices = fetch_quotes(INDICES, currency="pts")

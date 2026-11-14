@@ -3,8 +3,11 @@ name: Market & Crypto Discord Newsletter
 on:
   schedule:
     # Clôture Nasdaq = 13:00 heure de San Francisco (16:00 ET) — Lundi, Mercredi, Vendredi
-    # 20:15 UTC en été (PDT, UTC-7) et 21:15 UTC en hiver (PST, UTC-8)
-    - cron: "15 20,21 * * 1,3,5"
+    # Déclenchement à 13:20 PT (minute :20 non encombrée pour éviter les files d'attente GitHub Actions)
+    # Heure d'été (PDT, UTC-7) = 20:20 UTC
+    # Heure d'hiver (PST, UTC-8) = 21:20 UTC
+    - cron: "20 20 * * 1,3,5"
+    - cron: "20 21 * * 1,3,5"
   workflow_dispatch:
 
 jobs:
@@ -12,21 +15,54 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Check San Francisco local time (DST guard)
+      - name: Check San Francisco local time and schedule guard
         id: time_check
         run: |
           if [ "${{ github.event_name }}" != "schedule" ]; then
             echo "should_run=true" >> "$GITHUB_OUTPUT"
+            echo "Manual trigger detected: executing newsletter."
             exit 0
           fi
-          SF_HOUR=$(TZ="America/Los_Angeles" date +%H)
-          echo "Current San Francisco hour: $SF_HOUR"
-          if [ "$SF_HOUR" = "13" ]; then
-            echo "should_run=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "Skipping run outside 13:xx America/Los_Angeles (DST offset)."
+
+          SF_OFFSET=$(TZ="America/Los_Angeles" date +%z)
+          SF_HOUR=$(TZ="America/Los_Angeles" date +%H | sed 's/^0//')
+          SF_HOUR=${SF_HOUR:-0}
+          SCHEDULE="${{ github.event.schedule }}"
+
+          echo "San Francisco offset: $SF_OFFSET"
+          echo "San Francisco hour: $SF_HOUR"
+          echo "Triggered schedule: $SCHEDULE"
+
+          # 1. Ne jamais exécuter avant la clôture du Nasdaq (13:00 PT)
+          if [ "$SF_HOUR" -lt 13 ]; then
+            echo "Skipping: market not closed yet (< 13:00 PT)."
             echo "should_run=false" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
+
+          # 2. Ne pas exécuter si le retard dépasse 22:00 PT
+          if [ "$SF_HOUR" -ge 22 ]; then
+            echo "Skipping: run delayed past 22:00 PT."
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # 3. En heure d'été (PDT, -0700) : ignorer le créneau d'hiver (21:xx UTC)
+          if [ "$SF_OFFSET" = "-0700" ] && echo "$SCHEDULE" | grep -q " 21 "; then
+            echo "Skipping winter schedule (21:xx UTC) during daylight saving time (PDT, -0700)."
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # 4. En heure d'hiver (PST, -0800) : ignorer le créneau d'été (20:xx UTC)
+          if [ "$SF_OFFSET" = "-0800" ] && echo "$SCHEDULE" | grep -q " 20 "; then
+            echo "Skipping summer schedule (20:xx UTC) during standard time (PST, -0800)."
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "All checks passed. Running newsletter."
+          echo "should_run=true" >> "$GITHUB_OUTPUT"
 
       - name: Checkout repository
         if: steps.time_check.outputs.should_run == 'true'

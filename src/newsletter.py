@@ -451,6 +451,38 @@ def fetch_candidates_for_category(category: str, limit: int = 4) -> list[dict]:
     return candidates
 
 
+def call_gemini_api(prompt: str, api_key: str) -> str | None:
+    if not api_key:
+        return None
+
+    model_candidates = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
+    payload = {"contents": [{"parts": [{"text": prompt}]}]}
+
+    for model_name in model_candidates:
+        url = (
+            f"https://generativelanguage.googleapis.com/v1beta/models/"
+            f"{model_name}:generateContent?key={api_key}"
+        )
+        try:
+            resp = requests.post(url, json=payload, timeout=20)
+            if resp.status_code == 200:
+                data = resp.json()
+                candidates_list = data.get("candidates")
+                if candidates_list:
+                    parts = candidates_list[0].get("content", {}).get("parts", [])
+                    if parts:
+                        text = parts[0].get("text", "").strip()
+                        if text:
+                            print(f"Gemini API request succeeded with {model_name}.")
+                            return text
+            else:
+                print(f"Gemini API ({model_name}) returned HTTP {resp.status_code}")
+        except Exception as e:
+            print(f"Gemini API ({model_name}) error: {e}")
+
+    return None
+
+
 def select_headlines_with_gemini(
     tech_candidates: list[dict],
     macro_candidates: list[dict],
@@ -484,36 +516,21 @@ def select_headlines_with_gemini(
         f"Candidates:\n{json.dumps(pool, ensure_ascii=False)}"
     )
 
-    url = (
-        "https://generativelanguage.googleapis.com/v1beta/models/"
-        f"gemini-2.5-flash:generateContent?key={api_key}"
-    )
+    raw_text = call_gemini_api(prompt, api_key)
+    if not raw_text:
+        return None
 
     try:
-        payload = {"contents": [{"parts": [{"text": prompt}]}]}
-        resp = requests.post(url, json=payload, timeout=20)
-        resp.raise_for_status()
-        data = resp.json()
-        candidates_field = data.get("candidates")
-        if not candidates_field:
-            return None
-
-        first_cand = candidates_field[0]
-        content_field = first_cand.get("content", {})
-        parts_field = content_field.get("parts", [])
-        if not parts_field:
-            return None
-
-        raw_text = parts_field[0].get("text", "").strip()
-        if raw_text.startswith("```"):
-            fence_lines = raw_text.split("\n")
+        cleaned_text = raw_text.strip()
+        if cleaned_text.startswith("```"):
+            fence_lines = cleaned_text.split("\n")
             if fence_lines[0].startswith("```"):
                 fence_lines = fence_lines[1:]
             if fence_lines and fence_lines[-1].startswith("```"):
                 fence_lines = fence_lines[:-1]
-            raw_text = "\n".join(fence_lines).strip()
+            cleaned_text = "\n".join(fence_lines).strip()
 
-        items = json.loads(raw_text)
+        items = json.loads(cleaned_text)
         if isinstance(items, list) and len(items) == 4:
             valid_items = []
             for it in items:
@@ -524,8 +541,8 @@ def select_headlines_with_gemini(
                     valid_items.append({"category": cat, "title": title, "link": link})
             if len(valid_items) == 4:
                 return valid_items
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Error parsing Gemini JSON headlines: {e}")
 
     return None
 
@@ -683,30 +700,14 @@ def maybe_generate_ai_summary(
 
     prompt = (
         "You are a concise financial analyst. Using ONLY the JSON data below, write a crisp "
-        "3-to-4 sentence editorial summary in English covering the week across US Tech, CAC 40, "
+        "3-to-4 sentence editorial summary in English covering the market day across US Tech, CAC 40, "
         "and Crypto. Direct, factual tone; never invent any numbers.\n\n"
         f"{json.dumps(facts, ensure_ascii=False)}"
     )
 
-    url = (
-        "https://generativelanguage.googleapis.com/v1beta/models/"
-        f"gemini-2.5-flash:generateContent?key={api_key}"
-    )
-    try:
-        payload = {"contents": [{"parts": [{"text": prompt}]}]}
-        resp = requests.post(url, json=payload, timeout=20)
-        resp.raise_for_status()
-        data = resp.json()
-        candidates_field = data.get("candidates")
-        if candidates_field:
-            parts = candidates_field[0].get("content", {}).get("parts", [])
-            if parts:
-                text = parts[0].get("text", "").strip()
-                if text:
-                    return text[:1000]
-    except Exception:
-        pass
-
+    text = call_gemini_api(prompt, api_key)
+    if text:
+        return text[:1000]
     return None
 
 

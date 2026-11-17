@@ -131,6 +131,7 @@ def fetch_quotes(
     tickers = [s for s, _ in symbols]
     name_map = dict(symbols)
 
+    use_threads = False if len(tickers) <= 5 else True
     raw = yf.download(
         tickers=tickers,
         period="1mo",
@@ -138,52 +139,98 @@ def fetch_quotes(
         group_by="ticker",
         auto_adjust=False,
         progress=False,
-        threads=True,
+        threads=use_threads,
     )
 
     results: list[QuotePerf] = []
-    if raw.empty:
-        return results
-
     single_ticker = len(tickers) == 1
     now_sf = datetime.now(SF_TZ).date()
     monday_this_week = now_sf - timedelta(days=now_sf.weekday())
 
-    for sym in tickers:
-        try:
-            df = raw if single_ticker else raw[sym]
-            closes = df["Close"].dropna()
-            if len(closes) < 2:
+    if not raw.empty:
+        for sym in tickers:
+            try:
+                df = raw if single_ticker else raw[sym]
+                closes = df["Close"].dropna()
+                if len(closes) < 2:
+                    continue
+
+                last_price = float(closes.iloc[-1])
+                prev_day_price = float(closes.iloc[-2])
+                day_pct = ((last_price / prev_day_price) - 1.0) * 100.0
+
+                if is_crypto:
+                    idx = -8 if len(closes) >= 8 else 0
+                    week_base = float(closes.iloc[idx])
+                else:
+                    prior_week = closes[closes.index.date < monday_this_week]
+                    if not prior_week.empty:
+                        week_base = float(prior_week.iloc[-1])
+                    else:
+                        idx = -6 if len(closes) >= 6 else 0
+                        week_base = float(closes.iloc[idx])
+
+                week_pct = ((last_price / week_base) - 1.0) * 100.0
+                results.append(
+                    QuotePerf(
+                        symbol=sym,
+                        name=name_map[sym],
+                        price=last_price,
+                        day_pct=day_pct,
+                        week_pct=week_pct,
+                        currency=currency,
+                    )
+                )
+            except Exception:
                 continue
 
-            last_price = float(closes.iloc[-1])
-            prev_day_price = float(closes.iloc[-2])
-            day_pct = ((last_price / prev_day_price) - 1.0) * 100.0
-
-            if is_crypto:
-                idx = -8 if len(closes) >= 8 else 0
-                week_base = float(closes.iloc[idx])
-            else:
-                prior_week = closes[closes.index.date < monday_this_week]
-                if not prior_week.empty:
-                    week_base = float(prior_week.iloc[-1])
-                else:
-                    idx = -6 if len(closes) >= 6 else 0
-                    week_base = float(closes.iloc[idx])
-
-            week_pct = ((last_price / week_base) - 1.0) * 100.0
-            results.append(
-                QuotePerf(
-                    symbol=sym,
-                    name=name_map[sym],
-                    price=last_price,
-                    day_pct=day_pct,
-                    week_pct=week_pct,
-                    currency=currency,
+    # Fallback retry for any missing symbol (e.g. CAC 40 database lock)
+    found_symbols = {q.symbol for q in results}
+    for sym, name in symbols:
+        if sym not in found_symbols:
+            try:
+                single_raw = yf.download(
+                    tickers=[sym],
+                    period="1mo",
+                    interval="1d",
+                    auto_adjust=False,
+                    progress=False,
+                    threads=False,
                 )
-            )
-        except Exception:
-            continue
+                closes = single_raw["Close"].dropna()
+                if len(closes) >= 2:
+                    last_price = float(closes.iloc[-1])
+                    prev_day_price = float(closes.iloc[-2])
+                    day_pct = ((last_price / prev_day_price) - 1.0) * 100.0
+
+                    if is_crypto:
+                        idx = -8 if len(closes) >= 8 else 0
+                        week_base = float(closes.iloc[idx])
+                    else:
+                        prior_week = closes[closes.index.date < monday_this_week]
+                        if not prior_week.empty:
+                            week_base = float(prior_week.iloc[-1])
+                        else:
+                            idx = -6 if len(closes) >= 6 else 0
+                            week_base = float(closes.iloc[idx])
+
+                    week_pct = ((last_price / week_base) - 1.0) * 100.0
+                    results.append(
+                        QuotePerf(
+                            symbol=sym,
+                            name=name,
+                            price=last_price,
+                            day_pct=day_pct,
+                            week_pct=week_pct,
+                            currency=currency,
+                        )
+                    )
+            except Exception:
+                continue
+
+    # Keep original requested order
+    order_map = {sym: idx for idx, (sym, _) in enumerate(symbols)}
+    results.sort(key=lambda q: order_map.get(q.symbol, 999))
 
     return results
 
@@ -193,8 +240,15 @@ def fetch_rss_headlines(query: str, limit: int = 1, days: int = 3) -> list[tuple
         f"https://news.google.com/rss/search?"
         f"q={quote_plus(query)}+when:{days}d&hl=en-US&gl=US&ceid=US:en"
     )
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/124.0.0.0 Safari/537.36"
+        )
+    }
     try:
-        resp = requests.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
+        resp = requests.get(url, timeout=10, headers=headers)
         resp.raise_for_status()
         root = ET.fromstring(resp.text)
         items: list[tuple[str, str]] = []
@@ -206,6 +260,48 @@ def fetch_rss_headlines(query: str, limit: int = 1, days: int = 3) -> list[tuple
         return items
     except Exception:
         return []
+
+
+def fetch_top_headlines(days: int = 3) -> list[tuple[str, str]]:
+    query = "(Nvidia OR Nasdaq OR CAC 40 OR Bitcoin) market"
+    items = fetch_rss_headlines(query, limit=20, days=days)
+
+    tech_item = None
+    crypto_item = None
+    macro_item = None
+    fallback_items: list[tuple[str, str]] = []
+
+    for title, link in items:
+        lower = title.lower()
+        if tech_item is None and any(k in lower for k in ["nvidia", "nasdaq", "tech", "ai", "chip"]):
+            tech_item = (title, link)
+        elif crypto_item is None and any(k in lower for k in ["bitcoin", "crypto", "btc", "eth"]):
+            crypto_item = (title, link)
+        elif macro_item is None and any(k in lower for k in ["cac", "europe", "france", "paris", "fed", "s&p", "wall st"]):
+            macro_item = (title, link)
+        else:
+            fallback_items.append((title, link))
+
+    selected: list[tuple[str, str]] = []
+    for candidate in [tech_item, macro_item, crypto_item]:
+        if candidate is not None:
+            selected.append(candidate)
+
+    for item in fallback_items:
+        if len(selected) >= 3:
+            break
+        if item not in selected:
+            selected.append(item)
+
+    if len(selected) < 3:
+        extra = fetch_rss_headlines("stock market Wall Street", limit=5, days=days)
+        for item in extra:
+            if len(selected) >= 3:
+                break
+            if item not in selected:
+                selected.append(item)
+
+    return selected[:3]
 
 
 def format_headlines_field(items: list[tuple[str, str]], limit: int = 1024) -> str:
@@ -326,12 +422,7 @@ def build_discord_payload() -> dict:
     cac_top3 = cac_sorted[:3]
     cac_flop3 = list(reversed(cac_sorted[-3:])) if len(cac_sorted) >= 3 else []
 
-    # Exactly 3 top headlines: 1 US Tech/Markets, 1 CAC 40/Europe, 1 Bitcoin/Crypto
-    us_news = fetch_rss_headlines("Nasdaq Big Tech stock market", limit=1, days=news_days)
-    fr_news = fetch_rss_headlines("CAC 40 Paris stocks", limit=1, days=news_days)
-    crypto_news = fetch_rss_headlines("Bitcoin crypto market", limit=1, days=news_days)
-
-    headline_items = (us_news + fr_news + crypto_news)[:3]
+    headline_items = fetch_top_headlines(days=news_days)
     headline_titles = [t for t, _ in headline_items]
     ai_summary = maybe_generate_ai_summary(
         indices, tech_sorted, cac_top3, cac_flop3, cryptos, headline_titles

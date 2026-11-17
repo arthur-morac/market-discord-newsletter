@@ -1,6 +1,6 @@
 # Newsletter Hebdo Bourse & Crypto → Discord
 
-Bot 100 % gratuit hébergé sur **GitHub Actions** qui envoie chaque **lundi, mercredi et vendredi à 13h20 heure de San Francisco** (juste après la clôture du Nasdaq) une newsletter structurée sur **Discord** (avec notification push sur téléphone).
+Bot 100 % gratuit hébergé sur **GitHub Actions** qui envoie chaque **lundi, mercredi et vendredi à partir de 13h20 heure de San Francisco** (juste après la clôture du Nasdaq) une newsletter structurée sur **Discord** (avec notification push sur téléphone).
 
 ## Contenu de la newsletter
 - **Notification push résumée** : S&P 500, Nasdaq, CAC 40, Bitcoin.
@@ -9,6 +9,16 @@ Bot 100 % gratuit hébergé sur **GitHub Actions** qui envoie chaque **lundi, me
 - **CAC 40** : Top 3 hausses et Top 3 baisses de la semaine.
 - **Crypto** : Bitcoin (BTC), Ethereum (ETH), Solana (SOL) sur 24h et 7j.
 - **Actualités marquantes** : gros titres de la semaine (Google News RSS) + **résumé éditorial IA optionnel** via Gemini API Free Tier.
+
+---
+
+## Architecture de haute disponibilité (Tolérance aux pannes GitHub Actions)
+
+Les déclencheurs programmés (`schedule`) sur GitHub Actions subissent parfois des retards ou des annulations dues à la charge des serveurs partagés. Pour garantir une fiabilité absolue :
+
+1. **Fenêtre de réessais automatiques** : Le bot est programmé pour tenter un déclenchement toutes les 15 minutes entre 13h20 et 15h00 PT (`20,35,50 20,21,22 * * 1,3,5`).
+2. **Idempotence par Tag Git (`sent-YYYY-MM-DD`)** : Dès que l'envoi vers Discord réussit, un tag Git `sent-YYYY-MM-DD` est créé et poussé sur le dépôt.
+3. **Zéro doublon garanti** : Tous les essais suivants vérifient la présence de ce tag en amont (en moins de 2 secondes) et s'ignorent automatiquement dès que la newsletter du jour a été envoyée.
 
 ---
 
@@ -34,11 +44,12 @@ Bot 100 % gratuit hébergé sur **GitHub Actions** qui envoie chaque **lundi, me
 3. Sur GitHub, va dans **Settings** → **Secrets and variables** → **Actions** → **New repository secret** :
    - Name : `DISCORD_WEBHOOK_URL`
    - Secret : colle l'URL du webhook Discord.
+   - *(Optionnel)* `DISCORD_USER_ID` : ton identifiant Discord pour être mentionné directement (ex. `<@123456789>`).
 4. *(Optionnel — gratuit)* Si tu veux un court paragraphe de synthèse rédigé par IA au-dessus des chiffres, ajoute un second secret `GEMINI_API_KEY` avec une clé gratuite depuis [Google AI Studio](https://aistudio.google.com/). Sans cette clé, la newsletter fonctionne parfaitement avec les chiffres et les gros titres.
 
 ### 3. Tester immédiatement en 1 clic
-Sur GitHub, va dans l'onglet **Actions** → **Weekly Market Discord Newsletter** → **Run workflow**.
-Tu devrais recevoir la notification sur ton Discord dans les 20 secondes !
+Sur GitHub, va dans l'onglet **Actions** → **Market & Crypto Discord Newsletter** → **Run workflow**.
+Tu recevras la notification sur ton Discord dans les 20 secondes !
 
 ---
 

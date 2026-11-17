@@ -40,7 +40,6 @@ US_TECH_GIANTS = [
     ("AVGO", "Broadcom"),
 ]
 
-# Major CAC 40 components (Yahoo Finance)
 CAC40_TICKERS = {
     "MC.PA": "LVMH",
     "RMS.PA": "Hermès",
@@ -90,6 +89,48 @@ CRYPTOS = [
     ("SOL-USD", "Solana (SOL)"),
 ]
 
+HEADLINE_FEEDS = {
+    "Nasdaq / Tech": [
+        "https://news.google.com/rss/search?q=Nasdaq+OR+technology+stocks+when:2d&hl=en-US&gl=US&ceid=US:en",
+        "https://www.cnbc.com/id/19854910/device/rss/rss.html",
+        "https://finance.yahoo.com/news/rssindex",
+    ],
+    "US Macro": [
+        "https://news.google.com/rss/search?q=Federal+Reserve+OR+inflation+OR+Wall+Street+when:2d&hl=en-US&gl=US&ceid=US:en",
+        "https://www.cnbc.com/id/20910258/device/rss/rss.html",
+        "https://www.cnbc.com/id/100003114/device/rss/rss.html",
+    ],
+    "CAC 40": [
+        "https://news.google.com/rss/search?q=site:investir.lesechos.fr+CAC+40+when:2d&hl=fr&gl=FR&ceid=FR:fr",
+        "https://news.google.com/rss/search?q=CAC+40+bourse+when:2d&hl=fr&gl=FR&ceid=FR:fr",
+        "https://www.lefigaro.fr/rss/figaro_economie.xml",
+    ],
+    "Crypto": [
+        "https://news.google.com/rss/search?q=Bitcoin+OR+Ethereum+cryptocurrency+when:2d&hl=en-US&gl=US&ceid=US:en",
+        "https://www.coindesk.com/arc/outboundfeeds/rss/",
+        "https://cointelegraph.com/rss",
+    ],
+}
+
+HARDCODED_FALLBACKS = {
+    "Nasdaq / Tech": {
+        "title": "US Tech & Nasdaq Market Coverage",
+        "link": "https://www.google.com/finance/quote/.IXIC:INDEXNASDAQ",
+    },
+    "US Macro": {
+        "title": "US Economy, Fed & Wall Street Markets",
+        "link": "https://www.google.com/finance/quote/.INX:INDEXSP",
+    },
+    "CAC 40": {
+        "title": "Bourse de Paris et Actualités CAC 40 - Investir Les Echos",
+        "link": "https://investir.lesechos.fr/cours/indices/cac-40-FR0003500008-PX1",
+    },
+    "Crypto": {
+        "title": "Cryptocurrency & Bitcoin Market News",
+        "link": "https://www.coindesk.com/price/bitcoin/",
+    },
+}
+
 
 @dataclass
 class QuotePerf:
@@ -99,6 +140,7 @@ class QuotePerf:
     day_pct: float
     week_pct: float
     currency: str = "$"
+    available: bool = True
 
 
 def fmt_pct(pct: float) -> str:
@@ -128,10 +170,18 @@ def fetch_quotes(
     is_crypto: bool = False,
     currency: str = "$",
 ) -> list[QuotePerf]:
-    tickers = [s for s, _ in symbols]
-    name_map = dict(symbols)
+    tickers = []
+    name_map = {}
+    for item in symbols:
+        sym = item[0]
+        name = item[1]
+        tickers.append(sym)
+        name_map[sym] = name
 
-    use_threads = False if len(tickers) <= 5 else True
+    use_threads = True
+    if len(tickers) <= 5:
+        use_threads = False
+
     raw = yf.download(
         tickers=tickers,
         period="1mo",
@@ -142,51 +192,68 @@ def fetch_quotes(
         threads=use_threads,
     )
 
-    results: list[QuotePerf] = []
-    single_ticker = len(tickers) == 1
+    results = []
+    single_ticker = False
+    if len(tickers) == 1:
+        single_ticker = True
+
     now_sf = datetime.now(SF_TZ).date()
-    monday_this_week = now_sf - timedelta(days=now_sf.weekday())
+    weekday_number = now_sf.weekday()
+    monday_this_week = now_sf - timedelta(days=weekday_number)
 
     if not raw.empty:
         for sym in tickers:
             try:
-                df = raw if single_ticker else raw[sym]
+                df = raw
+                if not single_ticker:
+                    df = raw[sym]
                 closes = df["Close"].dropna()
                 if len(closes) < 2:
                     continue
 
                 last_price = float(closes.iloc[-1])
                 prev_day_price = float(closes.iloc[-2])
-                day_pct = ((last_price / prev_day_price) - 1.0) * 100.0
+                day_ratio = last_price / prev_day_price
+                day_pct = (day_ratio - 1.0) * 100.0
 
                 if is_crypto:
-                    idx = -8 if len(closes) >= 8 else 0
+                    idx = -8
+                    if len(closes) < 8:
+                        idx = 0
                     week_base = float(closes.iloc[idx])
                 else:
                     prior_week = closes[closes.index.date < monday_this_week]
                     if not prior_week.empty:
                         week_base = float(prior_week.iloc[-1])
                     else:
-                        idx = -6 if len(closes) >= 6 else 0
+                        idx = -6
+                        if len(closes) < 6:
+                            idx = 0
                         week_base = float(closes.iloc[idx])
 
-                week_pct = ((last_price / week_base) - 1.0) * 100.0
-                results.append(
-                    QuotePerf(
-                        symbol=sym,
-                        name=name_map[sym],
-                        price=last_price,
-                        day_pct=day_pct,
-                        week_pct=week_pct,
-                        currency=currency,
-                    )
+                week_ratio = last_price / week_base
+                week_pct = (week_ratio - 1.0) * 100.0
+                quote_name = name_map[sym]
+                perf = QuotePerf(
+                    symbol=sym,
+                    name=quote_name,
+                    price=last_price,
+                    day_pct=day_pct,
+                    week_pct=week_pct,
+                    currency=currency,
+                    available=True,
                 )
+                results.append(perf)
             except Exception:
                 continue
 
-    # Fallback retry for any missing symbol (e.g. CAC 40 database lock)
-    found_symbols = {q.symbol for q in results}
-    for sym, name in symbols:
+    found_symbols = set()
+    for item in results:
+        found_symbols.add(item.symbol)
+
+    for item in symbols:
+        sym = item[0]
+        name = item[1]
         if sym not in found_symbols:
             try:
                 single_raw = yf.download(
@@ -201,61 +268,187 @@ def fetch_quotes(
                 if len(closes) >= 2:
                     last_price = float(closes.iloc[-1])
                     prev_day_price = float(closes.iloc[-2])
-                    day_pct = ((last_price / prev_day_price) - 1.0) * 100.0
+                    day_ratio = last_price / prev_day_price
+                    day_pct = (day_ratio - 1.0) * 100.0
 
                     if is_crypto:
-                        idx = -8 if len(closes) >= 8 else 0
+                        idx = -8
+                        if len(closes) < 8:
+                            idx = 0
                         week_base = float(closes.iloc[idx])
                     else:
                         prior_week = closes[closes.index.date < monday_this_week]
                         if not prior_week.empty:
                             week_base = float(prior_week.iloc[-1])
                         else:
-                            idx = -6 if len(closes) >= 6 else 0
+                            idx = -6
+                            if len(closes) < 6:
+                                idx = 0
                             week_base = float(closes.iloc[idx])
 
-                    week_pct = ((last_price / week_base) - 1.0) * 100.0
-                    results.append(
-                        QuotePerf(
-                            symbol=sym,
-                            name=name,
-                            price=last_price,
-                            day_pct=day_pct,
-                            week_pct=week_pct,
-                            currency=currency,
-                        )
+                    week_ratio = last_price / week_base
+                    week_pct = (week_ratio - 1.0) * 100.0
+                    perf = QuotePerf(
+                        symbol=sym,
+                        name=name,
+                        price=last_price,
+                        day_pct=day_pct,
+                        week_pct=week_pct,
+                        currency=currency,
+                        available=True,
                     )
+                    results.append(perf)
+                    found_symbols.add(sym)
             except Exception:
                 continue
 
-    # Keep original requested order
-    order_map = {sym: idx for idx, (sym, _) in enumerate(symbols)}
-    results.sort(key=lambda q: order_map.get(q.symbol, 999))
+    for item in symbols:
+        sym = item[0]
+        name = item[1]
+        if sym not in found_symbols:
+            placeholder = QuotePerf(
+                symbol=sym,
+                name=name,
+                price=0.0,
+                day_pct=0.0,
+                week_pct=0.0,
+                currency=currency,
+                available=False,
+            )
+            results.append(placeholder)
 
+    order_map = {}
+    for idx, item in enumerate(symbols):
+        sym = item[0]
+        order_map[sym] = idx
+
+    results.sort(key=lambda q: order_map.get(q.symbol, 999))
     return results
 
 
-def fetch_feed_candidates(url: str, limit: int = 5) -> list[dict]:
-    items: list[dict] = []
+def format_index_line(q: QuotePerf, is_friday: bool) -> str:
+    if not q.available:
+        return f"**{q.name}** : *Data temporarily unavailable*"
+    price_str = fmt_price(q.price, q.currency)
+    if is_friday:
+        week_str = fmt_pct(q.week_pct)
+        day_str = fmt_pct_compact(q.day_pct)
+        return f"**{q.name}** : `{price_str}` · Weekly {week_str} *(1D {day_str})*"
+    else:
+        day_str = fmt_pct(q.day_pct)
+        week_str = fmt_pct_compact(q.week_pct)
+        return f"**{q.name}** : `{price_str}` · 1D {day_str} *(WTD {week_str})*"
+
+
+def format_tech_line(q: QuotePerf, is_friday: bool) -> str:
+    if not q.available:
+        return f"**{q.name}** (`{q.symbol}`) : *Data temporarily unavailable*"
+    price_str = fmt_price(q.price, "$")
+    if is_friday:
+        week_str = fmt_pct(q.week_pct)
+        day_str = fmt_pct_compact(q.day_pct)
+        return f"**{q.name}** (`{q.symbol}`) : `{price_str}` · Weekly {week_str} *(1D {day_str})*"
+    else:
+        day_str = fmt_pct(q.day_pct)
+        week_str = fmt_pct_compact(q.week_pct)
+        return f"**{q.name}** (`{q.symbol}`) : `{price_str}` · 1D {day_str} *(WTD {week_str})*"
+
+
+def format_crypto_line(q: QuotePerf, is_friday: bool) -> str:
+    if not q.available:
+        return f"**{q.name}** : *Data temporarily unavailable*"
+    price_str = fmt_price(q.price, "$")
+    if is_friday:
+        week_str = fmt_pct(q.week_pct)
+        day_str = fmt_pct_compact(q.day_pct)
+        return f"**{q.name}** : `{price_str}` · 7D {week_str} *(24h {day_str})*"
+    else:
+        day_str = fmt_pct(q.day_pct)
+        week_str = fmt_pct_compact(q.week_pct)
+        return f"**{q.name}** : `{price_str}` · 24h {day_str} *(7D {week_str})*"
+
+
+def format_cac_section(
+    cac_top3: list[QuotePerf],
+    cac_flop3: list[QuotePerf],
+    is_friday: bool,
+) -> str:
+    if not cac_top3 and not cac_flop3:
+        return "*Data temporarily unavailable.*"
+
+    lines = []
+    if is_friday:
+        lines.append("**Top 3 Gainers (Weekly)**")
+        for q in cac_top3:
+            price_str = fmt_price(q.price, "€")
+            pct_str = fmt_pct(q.week_pct)
+            lines.append(f"• **{q.name}** (`{price_str}`) : {pct_str}")
+        if cac_flop3:
+            lines.append("\n**Top 3 Losers (Weekly)**")
+            for q in cac_flop3:
+                price_str = fmt_price(q.price, "€")
+                pct_str = fmt_pct(q.week_pct)
+                lines.append(f"• **{q.name}** (`{price_str}`) : {pct_str}")
+    else:
+        lines.append("**Top 3 Gainers (Today)**")
+        for q in cac_top3:
+            price_str = fmt_price(q.price, "€")
+            pct_str = fmt_pct(q.day_pct)
+            lines.append(f"• **{q.name}** (`{price_str}`) : {pct_str}")
+        if cac_flop3:
+            lines.append("\n**Top 3 Losers (Today)**")
+            for q in cac_flop3:
+                price_str = fmt_price(q.price, "€")
+                pct_str = fmt_pct(q.day_pct)
+                lines.append(f"• **{q.name}** (`{price_str}`) : {pct_str}")
+
+    return truncate_field(lines)
+
+
+def fetch_candidates_for_category(category: str, limit: int = 4) -> list[dict]:
+    urls = HEADLINE_FEEDS.get(category, [])
     headers = {
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             "AppleWebKit/537.36 (KHTML, like Gecko) "
             "Chrome/124.0.0.0 Safari/537.36"
-        )
+        ),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5",
     }
-    try:
-        resp = requests.get(url, timeout=10, headers=headers)
-        resp.raise_for_status()
-        root = ET.fromstring(resp.text)
-        for item in root.findall("./channel/item")[:limit]:
-            title = (item.findtext("title") or "").strip()
-            link = (item.findtext("link") or "").strip()
-            if title and link:
-                items.append({"title": title, "link": link})
-    except Exception:
-        pass
-    return items
+    candidates = []
+    for url in urls:
+        items = []
+        try:
+            resp = requests.get(url, timeout=10, headers=headers)
+            if resp.status_code == 200:
+                root = ET.fromstring(resp.content)
+                for element in root.findall("./channel/item"):
+                    raw_title = element.findtext("title")
+                    raw_link = element.findtext("link")
+                    title = ""
+                    if raw_title:
+                        title = raw_title.strip()
+                    link = ""
+                    if raw_link:
+                        link = raw_link.strip()
+                    if title and link:
+                        item = {"title": title, "link": link}
+                        items.append(item)
+                    if len(items) >= limit:
+                        break
+        except Exception:
+            pass
+
+        if items:
+            candidates = items
+            break
+
+    if not candidates:
+        fallback = HARDCODED_FALLBACKS[category]
+        candidates.append(fallback)
+
+    return candidates
 
 
 def select_headlines_with_gemini(
@@ -269,22 +462,23 @@ def select_headlines_with_gemini(
         return None
 
     pool = {
-        "tech_candidates": tech_candidates,
-        "macro_candidates": macro_candidates,
-        "cac_candidates": cac_candidates,
-        "crypto_candidates": crypto_candidates,
+        "Nasdaq / Tech": tech_candidates,
+        "US Macro": macro_candidates,
+        "CAC 40": cac_candidates,
+        "Crypto": crypto_candidates,
     }
 
     prompt = (
-        "You are a chief financial editor. Given the candidate news articles below, select exactly 4 articles—one for each category:\n"
+        "You are a financial news editor formatting headlines for a mobile Discord newsletter.\n"
+        "Given the candidate news articles below, select exactly 4 articles—one for each category in this exact order:\n"
         "1. category: 'Nasdaq / Tech' (best article on US Big Tech, AI, semiconductors, or Nasdaq)\n"
         "2. category: 'US Macro' (best article on the Federal Reserve, inflation, interest rates, or Wall Street broad markets)\n"
         "3. category: 'CAC 40' (best article on the Paris stock market, French blue chips, or European economy)\n"
         "4. category: 'Crypto' (best article on Bitcoin or cryptocurrency markets)\n\n"
-        "Selection Rules:\n"
+        "Selection and Title Summarization Rules:\n"
         "- Choose the single most market-moving, impactful headline for each category from its candidate list.\n"
         "- You must keep the EXACT 'link' from the candidate object.\n"
-        "- You may keep or lightly refine the 'title' for crispness.\n"
+        "- CRITICAL FOR MOBILE: Re-write/summarize the 'title' into a short, punchy headline (maximum 8 to 12 words, strictly under 65 characters) so it is effortless to read on a phone.\n"
         "- Output MUST be a valid JSON array of 4 objects with keys: 'category', 'title', 'link'.\n"
         "- Return ONLY the raw JSON array, without any markdown formatting or commentary.\n\n"
         f"Candidates:\n{json.dumps(pool, ensure_ascii=False)}"
@@ -296,15 +490,21 @@ def select_headlines_with_gemini(
     )
 
     try:
-        resp = requests.post(
-            url,
-            json={"contents": [{"parts": [{"text": prompt}]}]},
-            timeout=20,
-        )
+        payload = {"contents": [{"parts": [{"text": prompt}]}]}
+        resp = requests.post(url, json=payload, timeout=20)
         resp.raise_for_status()
         data = resp.json()
-        raw_text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+        candidates_field = data.get("candidates")
+        if not candidates_field:
+            return None
 
+        first_cand = candidates_field[0]
+        content_field = first_cand.get("content", {})
+        parts_field = content_field.get("parts", [])
+        if not parts_field:
+            return None
+
+        raw_text = parts_field[0].get("text", "").strip()
         if raw_text.startswith("```"):
             fence_lines = raw_text.split("\n")
             if fence_lines[0].startswith("```"):
@@ -315,7 +515,7 @@ def select_headlines_with_gemini(
 
         items = json.loads(raw_text)
         if isinstance(items, list) and len(items) == 4:
-            valid_items: list[dict] = []
+            valid_items = []
             for it in items:
                 cat = str(it.get("category", "")).strip()
                 title = str(it.get("title", "")).strip()
@@ -331,36 +531,10 @@ def select_headlines_with_gemini(
 
 
 def fetch_top_headlines(api_key: str = "") -> list[dict]:
-    tech_candidates = fetch_feed_candidates(
-        "https://www.cnbc.com/id/19854910/device/rss/rss.html", limit=4
-    )
-    macro_candidates = fetch_feed_candidates(
-        "https://www.cnbc.com/id/20910258/device/rss/rss.html", limit=4
-    )
-    cac_candidates = fetch_feed_candidates(
-        "https://news.google.com/rss/search?q=site:investir.lesechos.fr+CAC+40+when:2d&hl=fr&gl=FR&ceid=FR:fr",
-        limit=4,
-    )
-    crypto_candidates = fetch_feed_candidates(
-        "https://www.coindesk.com/arc/outboundfeeds/rss/", limit=4
-    )
-
-    if not tech_candidates:
-        tech_candidates = fetch_feed_candidates(
-            "https://www.cnbc.com/id/100003114/device/rss/rss.html", limit=4
-        )
-    if not macro_candidates:
-        macro_candidates = fetch_feed_candidates(
-            "https://www.cnbc.com/id/100003114/device/rss/rss.html", limit=4
-        )
-    if not cac_candidates:
-        cac_candidates = fetch_feed_candidates(
-            "https://www.lefigaro.fr/rss/figaro_economie.xml", limit=4
-        )
-    if not crypto_candidates:
-        crypto_candidates = fetch_feed_candidates(
-            "https://cointelegraph.com/rss", limit=4
-        )
+    tech_candidates = fetch_candidates_for_category("Nasdaq / Tech", limit=4)
+    macro_candidates = fetch_candidates_for_category("US Macro", limit=4)
+    cac_candidates = fetch_candidates_for_category("CAC 40", limit=4)
+    crypto_candidates = fetch_candidates_for_category("Crypto", limit=4)
 
     if api_key:
         gemini_result = select_headlines_with_gemini(
@@ -373,78 +547,97 @@ def fetch_top_headlines(api_key: str = "") -> list[dict]:
         if gemini_result and len(gemini_result) == 4:
             return gemini_result
 
-    fallback_selected: list[dict] = []
-    if tech_candidates:
-        first_tech = tech_candidates[0]
-        fallback_selected.append(
-            {
-                "category": "Nasdaq / Tech",
-                "title": first_tech["title"],
-                "link": first_tech["link"],
-            }
-        )
-    if macro_candidates:
-        first_macro = macro_candidates[0]
-        fallback_selected.append(
-            {
-                "category": "US Macro",
-                "title": first_macro["title"],
-                "link": first_macro["link"],
-            }
-        )
-    if cac_candidates:
-        first_cac = cac_candidates[0]
-        fallback_selected.append(
-            {
-                "category": "CAC 40",
-                "title": first_cac["title"],
-                "link": first_cac["link"],
-            }
-        )
-    if crypto_candidates:
-        first_crypto = crypto_candidates[0]
-        fallback_selected.append(
-            {
-                "category": "Crypto",
-                "title": first_crypto["title"],
-                "link": first_crypto["link"],
-            }
-        )
+    first_tech = tech_candidates[0]
+    first_macro = macro_candidates[0]
+    first_cac = cac_candidates[0]
+    first_crypto = crypto_candidates[0]
 
+    fallback_selected = [
+        {
+            "category": "Nasdaq / Tech",
+            "title": first_tech["title"],
+            "link": first_tech["link"],
+        },
+        {
+            "category": "US Macro",
+            "title": first_macro["title"],
+            "link": first_macro["link"],
+        },
+        {
+            "category": "CAC 40",
+            "title": first_cac["title"],
+            "link": first_cac["link"],
+        },
+        {
+            "category": "Crypto",
+            "title": first_crypto["title"],
+            "link": first_crypto["link"],
+        },
+    ]
     return fallback_selected
 
 
+def clean_and_shorten_title(title: str, max_chars: int = 65) -> str:
+    cleaned = title.strip()
+    if " - " in cleaned:
+        parts = cleaned.rsplit(" - ", 1)
+        if len(parts[0]) >= 15:
+            cleaned = parts[0].strip()
+    elif " | " in cleaned:
+        parts = cleaned.rsplit(" | ", 1)
+        if len(parts[0]) >= 15:
+            cleaned = parts[0].strip()
+
+    if len(cleaned) <= max_chars:
+        return cleaned
+
+    cutoff = max_chars - 3
+    truncated = cleaned[:cutoff]
+    last_space = truncated.rfind(" ")
+    if last_space > 25:
+        truncated = truncated[:last_space]
+    return truncated + "..."
+
+
+def shorten_url_if_needed(url: str) -> str:
+    if len(url) <= 120:
+        return url
+    try:
+        encoded_url = quote_plus(url)
+        api_url = f"https://tinyurl.com/api-create.php?url={encoded_url}"
+        resp = requests.get(api_url, timeout=3)
+        if resp.status_code == 200:
+            short_link = resp.text.strip()
+            if short_link.startswith("http"):
+                return short_link
+    except Exception:
+        pass
+    return url
+
+
 def format_headlines_field(items: list[dict], limit: int = 1024) -> str:
-    """Format up to 4 headlines as clickable markdown links within Discord's 1024-char limit."""
+    """Format exactly 4 headlines as clickable markdown links within Discord's 1024-char limit."""
     if not items:
         return "No headlines available."
 
-    selected = items[:4]
-    lines: list[str] = []
-    max_per_item = (limit - 10) // len(selected)
+    lines = []
+    for it in items:
+        category_name = str(it.get("category", "")).strip()
+        raw_title = str(it.get("title", "")).strip()
+        raw_link = str(it.get("link", "")).strip()
 
-    for it in selected:
-        cat = str(it.get("category", "")).strip()
-        title = str(it.get("title", "")).strip()
-        link = str(it.get("link", "")).strip()
+        short_title = clean_and_shorten_title(raw_title, max_chars=65)
+        clean_link = shorten_url_if_needed(raw_link)
 
-        prefix = f"• **{cat}** : " if cat else "• "
-        overhead = len(prefix) + len("[]()") + len(link)
-        max_title = max(25, max_per_item - overhead)
-
-        if len(title) > max_title:
-            short_title = title[: max_title - 3] + "..."
-        else:
-            short_title = title
-
-        if link:
-            line = f"{prefix}[{short_title}]({link})"
+        prefix = f"• **{category_name}** : "
+        if clean_link:
+            line = f"{prefix}[{short_title}]({clean_link})"
         else:
             line = f"{prefix}{short_title}"
 
         lines.append(line)
 
-    return truncate_field(lines, limit=limit)
+    return "\n".join(lines)
 
 
 def maybe_generate_ai_summary(
@@ -463,20 +656,27 @@ def maybe_generate_ai_summary(
         "indices": [
             {"name": q.name, "price": round(q.price, 2), "week_pct": round(q.week_pct, 2)}
             for q in indices
+            if q.available
         ],
         "us_tech": [
             {"name": q.name, "price": round(q.price, 2), "week_pct": round(q.week_pct, 2)}
             for q in tech
+            if q.available
         ],
         "cac_top3": [
-            {"name": q.name, "week_pct": round(q.week_pct, 2)} for q in cac_top
+            {"name": q.name, "week_pct": round(q.week_pct, 2)}
+            for q in cac_top
+            if q.available
         ],
         "cac_bottom3": [
-            {"name": q.name, "week_pct": round(q.week_pct, 2)} for q in cac_flop
+            {"name": q.name, "week_pct": round(q.week_pct, 2)}
+            for q in cac_flop
+            if q.available
         ],
         "crypto": [
             {"name": q.name, "price": round(q.price, 2), "week_pct": round(q.week_pct, 2)}
             for q in cryptos
+            if q.available
         ],
         "headlines": headlines,
     }
@@ -493,29 +693,38 @@ def maybe_generate_ai_summary(
         f"gemini-2.5-flash:generateContent?key={api_key}"
     )
     try:
-        resp = requests.post(
-            url,
-            json={"contents": [{"parts": [{"text": prompt}]}]},
-            timeout=20,
-        )
+        payload = {"contents": [{"parts": [{"text": prompt}]}]}
+        resp = requests.post(url, json=payload, timeout=20)
         resp.raise_for_status()
         data = resp.json()
-        text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
-        return text[:1000] if text else None
+        candidates_field = data.get("candidates")
+        if candidates_field:
+            parts = candidates_field[0].get("content", {}).get("parts", [])
+            if parts:
+                text = parts[0].get("text", "").strip()
+                if text:
+                    return text[:1000]
     except Exception:
-        return None
+        pass
+
+    return None
 
 
 def truncate_field(lines: Iterable[str], limit: int = 1024) -> str:
-    out: list[str] = []
+    out = []
     total = 0
     for line in lines:
-        add = len(line) + (1 if out else 0)
+        add = len(line)
+        if len(out) > 0:
+            add = add + 1
         if total + add > limit:
             break
         out.append(line)
-        total += add
-    return "\n".join(out) if out else "Data unavailable."
+        total = total + add
+
+    if len(out) == 0:
+        return "Data unavailable."
+    return "\n".join(out)
 
 
 def build_discord_payload() -> dict:
@@ -525,179 +734,211 @@ def build_discord_payload() -> dict:
     is_friday = False
     if day_of_week == 4 or day_of_week == 5 or day_of_week == 6:
         is_friday = True
-    news_days = 7 if is_friday else 3
 
     indices = fetch_quotes(INDICES, currency="pts")
     tech = fetch_quotes(US_TECH_GIANTS, currency="$")
-    cac_stocks = fetch_quotes(list(CAC40_TICKERS.items()), currency="€")
+    cac_pairs = []
+    for sym, name in CAC40_TICKERS.items():
+        cac_pairs.append((sym, name))
+    cac_stocks = fetch_quotes(cac_pairs, currency="€")
     cryptos = fetch_quotes(CRYPTOS, is_crypto=True, currency="$")
 
-    sort_key = (lambda q: q.week_pct) if is_friday else (lambda q: q.day_pct)
-    tech_sorted = sorted(tech, key=sort_key, reverse=True)
-    cac_sorted = sorted(cac_stocks, key=sort_key, reverse=True)
-    cac_top3 = cac_sorted[:3]
-    cac_flop3 = list(reversed(cac_sorted[-3:])) if len(cac_sorted) >= 3 else []
+    available_tech = []
+    for q in tech:
+        if q.available:
+            available_tech.append(q)
+    if is_friday:
+        available_tech.sort(key=lambda q: q.week_pct, reverse=True)
+    else:
+        available_tech.sort(key=lambda q: q.day_pct, reverse=True)
+
+    tech_sorted = []
+    tech_sorted.extend(available_tech)
+    for q in tech:
+        if not q.available:
+            tech_sorted.append(q)
+
+    available_cac = []
+    for q in cac_stocks:
+        if q.available:
+            available_cac.append(q)
+    if is_friday:
+        available_cac.sort(key=lambda q: q.week_pct, reverse=True)
+    else:
+        available_cac.sort(key=lambda q: q.day_pct, reverse=True)
+
+    cac_top3 = available_cac[:3]
+    cac_flop3 = []
+    if len(available_cac) >= 3:
+        bottom_three = available_cac[-3:]
+        cac_flop3 = list(reversed(bottom_three))
 
     api_key = os.getenv("GEMINI_API_KEY", "").strip()
     headline_items = fetch_top_headlines(api_key=api_key)
-    headline_titles = [
-        f"{it.get('category', '')}: {it.get('title', '')}" for it in headline_items
-    ]
+    headline_titles = []
+    for it in headline_items:
+        cat_name = it.get("category", "")
+        t_text = it.get("title", "")
+        headline_titles.append(f"{cat_name}: {t_text}")
+
     ai_summary = maybe_generate_ai_summary(
         indices, tech_sorted, cac_top3, cac_flop3, cryptos, headline_titles
     )
 
-    # Short push notification preview text
-    idx_map = {q.name: q for q in indices}
-    btc = next((q for q in cryptos if q.symbol == "BTC-USD"), None)
-    push_parts = []
-    for label in ("S&P 500", "Nasdaq", "CAC 40"):
-        if label in idx_map:
-            pct = idx_map[label].week_pct if is_friday else idx_map[label].day_pct
-            push_parts.append(f"{label} {fmt_pct_compact(pct)}")
-    if btc:
-        btc_pct = btc.week_pct if is_friday else btc.day_pct
-        push_parts.append(f"BTC {fmt_price(btc.price, '$')} ({fmt_pct_compact(btc_pct)})")
-    prefix = "Weekly Close" if is_friday else "Market Close"
-    user_id = os.getenv("DISCORD_USER_ID", "").strip()
-    mention = f"<@{user_id}> " if user_id else ""
-    push_summary = f"{mention}📊 **{prefix}** — " + " | ".join(push_parts)
-    allowed_mentions = {"users": [user_id]} if user_id else {"parse": []}
+    idx_map = {}
+    for q in indices:
+        idx_map[q.name] = q
 
-    ref = idx_map.get("Nasdaq") or idx_map.get("S&P 500")
-    ref_pct = (ref.week_pct if is_friday else ref.day_pct) if ref else 0.0
-    embed_color = 0x2ECC71 if ref_pct >= 0 else 0xE74C3C
+    btc = None
+    for q in cryptos:
+        if q.symbol == "BTC-USD":
+            btc = q
+            break
+
+    push_parts = []
+    labels = ["S&P 500", "Nasdaq", "CAC 40"]
+    for label in labels:
+        if label in idx_map:
+            q = idx_map[label]
+            if q.available:
+                pct = q.day_pct
+                if is_friday:
+                    pct = q.week_pct
+                pct_text = fmt_pct_compact(pct)
+                push_parts.append(f"{label} {pct_text}")
+
+    if btc and btc.available:
+        btc_pct = btc.day_pct
+        if is_friday:
+            btc_pct = btc.week_pct
+        price_text = fmt_price(btc.price, "$")
+        pct_text = fmt_pct_compact(btc_pct)
+        push_parts.append(f"BTC {price_text} ({pct_text})")
+
+    prefix = "Market Close"
+    if is_friday:
+        prefix = "Weekly Close"
+    user_id = os.getenv("DISCORD_USER_ID", "").strip()
+    mention = ""
+    if user_id:
+        mention = f"<@{user_id}> "
+    join_str = " | ".join(push_parts)
+    push_summary = f"{mention}📊 **{prefix}** — {join_str}"
+
+    allowed_mentions = {"parse": []}
+    if user_id:
+        allowed_mentions = {"users": [user_id]}
+
+    ref = idx_map.get("Nasdaq")
+    if not ref or not ref.available:
+        ref = idx_map.get("S&P 500")
+    ref_pct = 0.0
+    if ref and ref.available:
+        ref_pct = ref.day_pct
+        if is_friday:
+            ref_pct = ref.week_pct
+    embed_color = 0x2ECC71
+    if ref_pct < 0:
+        embed_color = 0xE74C3C
 
     fields = []
 
     if ai_summary:
+        summary_title = "📝 Market Brief"
+        if is_friday:
+            summary_title = "📝 Week in Brief"
         fields.append(
             {
-                "name": "📝 Week in Brief" if is_friday else "📝 Market Brief",
+                "name": summary_title,
                 "value": ai_summary,
                 "inline": False,
             }
         )
 
-    if indices:
-        if is_friday:
-            idx_lines = [
-                f"**{q.name}** : `{fmt_price(q.price, q.currency)}` · Weekly {fmt_pct(q.week_pct)} *(1D {fmt_pct_compact(q.day_pct)})*"
-                for q in indices
-            ]
-        else:
-            idx_lines = [
-                f"**{q.name}** : `{fmt_price(q.price, q.currency)}` · 1D {fmt_pct(q.day_pct)} *(WTD {fmt_pct_compact(q.week_pct)})*"
-                for q in indices
-            ]
-        fields.append(
-            {
-                "name": "🌍 Key Indices",
-                "value": truncate_field(idx_lines),
-                "inline": False,
-            }
-        )
+    # 1. Key Indices (Always 3 indices)
+    idx_lines = []
+    for q in indices:
+        idx_lines.append(format_index_line(q, is_friday))
+    fields.append(
+        {
+            "name": "🌍 Key Indices",
+            "value": truncate_field(idx_lines),
+            "inline": False,
+        }
+    )
 
-    if tech_sorted:
-        if is_friday:
-            tech_lines = [
-                f"**{q.name}** (`{q.symbol}`) : `{fmt_price(q.price, '$')}` · Weekly {fmt_pct(q.week_pct)} *(1D {fmt_pct_compact(q.day_pct)})*"
-                for q in tech_sorted
-            ]
-            tech_title = "🇺🇸 US Tech Giants (Weekly Ranking)"
-        else:
-            tech_lines = [
-                f"**{q.name}** (`{q.symbol}`) : `{fmt_price(q.price, '$')}` · 1D {fmt_pct(q.day_pct)} *(WTD {fmt_pct_compact(q.week_pct)})*"
-                for q in tech_sorted
-            ]
-            tech_title = "🇺🇸 US Tech Giants (Today's Ranking)"
-        fields.append(
-            {
-                "name": tech_title,
-                "value": truncate_field(tech_lines),
-                "inline": False,
-            }
-        )
+    # 2. US Tech Giants (Always 8 stocks)
+    tech_lines = []
+    for q in tech_sorted:
+        tech_lines.append(format_tech_line(q, is_friday))
+    tech_title = "🇺🇸 US Tech Giants (Today's Ranking)"
+    if is_friday:
+        tech_title = "🇺🇸 US Tech Giants (Weekly Ranking)"
+    fields.append(
+        {
+            "name": tech_title,
+            "value": truncate_field(tech_lines),
+            "inline": False,
+        }
+    )
 
-    if cac_top3 or cac_flop3:
-        if is_friday:
-            cac_lines = ["**Top 3 Gainers (Weekly)**"]
-            cac_lines.extend(
-                f"• **{q.name}** (`{fmt_price(q.price, '€')}`) : {fmt_pct(q.week_pct)}"
-                for q in cac_top3
-            )
-            if cac_flop3:
-                cac_lines.append("\n**Top 3 Losers (Weekly)**")
-                cac_lines.extend(
-                    f"• **{q.name}** (`{fmt_price(q.price, '€')}`) : {fmt_pct(q.week_pct)}"
-                    for q in cac_flop3
-                )
-            cac_title = "🇫🇷 CAC 40 — Weekly Top & Bottom 3"
-        else:
-            cac_lines = ["**Top 3 Gainers (Today)**"]
-            cac_lines.extend(
-                f"• **{q.name}** (`{fmt_price(q.price, '€')}`) : {fmt_pct(q.day_pct)}"
-                for q in cac_top3
-            )
-            if cac_flop3:
-                cac_lines.append("\n**Top 3 Losers (Today)**")
-                cac_lines.extend(
-                    f"• **{q.name}** (`{fmt_price(q.price, '€')}`) : {fmt_pct(q.day_pct)}"
-                    for q in cac_flop3
-                )
-            cac_title = "🇫🇷 CAC 40 — Today's Top & Bottom 3"
-        fields.append(
-            {
-                "name": cac_title,
-                "value": truncate_field(cac_lines),
-                "inline": False,
-            }
-        )
+    # 3. CAC 40 Top & Bottom 3 (Always Top 3 and Bottom 3)
+    cac_title = "🇫🇷 CAC 40 — Today's Top & Bottom 3"
+    if is_friday:
+        cac_title = "🇫🇷 CAC 40 — Weekly Top & Bottom 3"
+    cac_content = format_cac_section(cac_top3, cac_flop3, is_friday)
+    fields.append(
+        {
+            "name": cac_title,
+            "value": cac_content,
+            "inline": False,
+        }
+    )
 
-    if cryptos:
-        if is_friday:
-            crypto_lines = [
-                f"**{q.name}** : `{fmt_price(q.price, '$')}` · 7D {fmt_pct(q.week_pct)} *(24h {fmt_pct_compact(q.day_pct)})*"
-                for q in cryptos
-            ]
-        else:
-            crypto_lines = [
-                f"**{q.name}** : `{fmt_price(q.price, '$')}` · 24h {fmt_pct(q.day_pct)} *(7D {fmt_pct_compact(q.week_pct)})*"
-                for q in cryptos
-            ]
-        fields.append(
-            {
-                "name": "🪙 Crypto (24/7)",
-                "value": truncate_field(crypto_lines),
-                "inline": False,
-            }
-        )
+    # 4. Crypto (Always 3 cryptos)
+    crypto_lines = []
+    for q in cryptos:
+        crypto_lines.append(format_crypto_line(q, is_friday))
+    fields.append(
+        {
+            "name": "🪙 Crypto (24/7)",
+            "value": truncate_field(crypto_lines),
+            "inline": False,
+        }
+    )
 
-    if headline_items:
-        fields.append(
-            {
-                "name": "📰 Top 4 Headlines" if not is_friday else "📰 Top 4 Headlines of the Week",
-                "value": format_headlines_field(headline_items),
-                "inline": False,
-            }
-        )
+    # 5. Top 4 Headlines (Always exactly 4 clickable articles)
+    headline_title = "📰 Top 4 Headlines"
+    if is_friday:
+        headline_title = "📰 Top 4 Headlines of the Week"
+    fields.append(
+        {
+            "name": headline_title,
+            "value": format_headlines_field(headline_items),
+            "inline": False,
+        }
+    )
 
-    # Add a visible blank line between sections in Discord
-    for field in fields[:-1]:
-        val = field["value"]
-        if len(val) <= 1022:
-            field["value"] = val + "\n\u200b"
+    # Add blank line separator between fields for clean rendering on Discord
+    total_fields = len(fields)
+    for idx, field in enumerate(fields):
+        if idx < total_fields - 1:
+            val = field["value"]
+            if len(val) <= 1022:
+                field["value"] = val + "\n\u200b"
+
+    date_str = now_sf.strftime("%Y-%m-%d")
+    embed_title = f"📈 Market & Crypto Brief — {date_str}"
+    if is_friday:
+        embed_title = f"📈 Weekly Market & Crypto Brief — {date_str}"
+
+    time_pt = now_sf.strftime("%I:%M %p")
+    time_paris = now_paris.strftime("%H:%M")
+    desc = f"US market close summary ({time_pt} PT / {time_paris} Paris)."
 
     embed = {
-        "title": (
-            f"📈 Weekly Market & Crypto Brief — {now_sf.strftime('%Y-%m-%d')}"
-            if is_friday
-            else f"📈 Market & Crypto Brief — {now_sf.strftime('%Y-%m-%d')}"
-        ),
-        "description": (
-            f"US market close summary "
-            f"({now_sf.strftime('%I:%M %p')} PT / {now_paris.strftime('%H:%M')} Paris)."
-        ),
+        "title": embed_title,
+        "description": desc,
         "color": embed_color,
         "fields": fields[:25],
         "footer": {
@@ -706,12 +947,13 @@ def build_discord_payload() -> dict:
         "timestamp": now_sf.isoformat(),
     }
 
-    return {
+    payload = {
         "username": "Market Brief",
         "content": push_summary[:2000],
         "allowed_mentions": allowed_mentions,
         "embeds": [embed],
     }
+    return payload
 
 
 def main() -> int:

@@ -451,65 +451,34 @@ def fetch_candidates_for_category(category: str, limit: int = 4) -> list[dict]:
     return candidates
 
 
-def get_available_gemini_model(api_key: str) -> str | None:
-    if not api_key:
-        return None
-    url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
-    try:
-        resp = requests.get(url, timeout=10)
-        if resp.status_code == 200:
-            data = resp.json()
-            models_list = data.get("models", [])
-            names = []
-            for m in models_list:
-                m_name = m.get("name", "")
-                methods = m.get("supportedGenerationMethods", [])
-                if "generateContent" in methods:
-                    clean_name = m_name.replace("models/", "")
-                    names.append(clean_name)
-            print(f"Available Gemini models: {names[:6]}")
-            for candidate in names:
-                if "flash" in candidate.lower():
-                    return candidate
-            if names:
-                return names[0]
-        else:
-            print(f"List models returned HTTP {resp.status_code}: {resp.text[:200]}")
-    except Exception as e:
-        print(f"Error querying Gemini models list: {e}")
-    return None
-
-
 def call_gemini_api(prompt: str, api_key: str) -> str | None:
     if not api_key:
         return None
 
-    model_name = get_available_gemini_model(api_key)
-    if not model_name:
-        model_name = "gemini-2.5-flash"
-
-    url = (
-        f"https://generativelanguage.googleapis.com/v1beta/models/"
-        f"{model_name}:generateContent?key={api_key}"
-    )
+    model_candidates = ["gemini-3.8-flash", "gemini-3.5-flash", "gemini-2.5-flash"]
     payload = {"contents": [{"parts": [{"text": prompt}]}]}
 
-    try:
-        resp = requests.post(url, json=payload, timeout=20)
-        if resp.status_code == 200:
-            data = resp.json()
-            candidates_list = data.get("candidates")
-            if candidates_list:
-                parts = candidates_list[0].get("content", {}).get("parts", [])
-                if parts:
-                    text = parts[0].get("text", "").strip()
-                    if text:
-                        print(f"Gemini API request succeeded with {model_name}.")
-                        return text
-        else:
-            print(f"Gemini API ({model_name}) returned HTTP {resp.status_code}: {resp.text[:200]}")
-    except Exception as e:
-        print(f"Gemini API ({model_name}) error: {e}")
+    for model_name in model_candidates:
+        url = (
+            f"https://generativelanguage.googleapis.com/v1beta/models/"
+            f"{model_name}:generateContent?key={api_key}"
+        )
+        try:
+            resp = requests.post(url, json=payload, timeout=20)
+            if resp.status_code == 200:
+                data = resp.json()
+                candidates_list = data.get("candidates")
+                if candidates_list:
+                    parts = candidates_list[0].get("content", {}).get("parts", [])
+                    if parts:
+                        text = parts[0].get("text", "").strip()
+                        if text:
+                            print(f"Gemini API request succeeded with {model_name}.")
+                            return text
+            else:
+                print(f"Gemini API ({model_name}) returned HTTP {resp.status_code}: {resp.text[:200]}")
+        except Exception as e:
+            print(f"Gemini API ({model_name}) error: {e}")
 
     return None
 

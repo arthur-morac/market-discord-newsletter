@@ -8,7 +8,7 @@ Bot 100 % gratuit hébergé sur **GitHub Actions** qui envoie chaque **lundi, me
 - **Géants de la Tech US** : Apple, Microsoft, NVIDIA, Alphabet, Amazon, Meta, Tesla, Broadcom.
 - **CAC 40** : Top 3 hausses et Top 3 baisses de la semaine.
 - **Crypto** : Bitcoin (BTC), Ethereum (ETH), Solana (SOL) sur 24h et 7j.
-- **Actualités marquantes** : gros titres de la semaine (Google News RSS) + **résumé éditorial IA optionnel** via Gemini API Free Tier.
+- **Actualités marquantes** : Top 4 des gros titres sélectionnés par l'IA (Nasdaq/Tech, Macro US, CAC 40, Crypto) avec liens cliquables + **résumé éditorial IA optionnel** via Gemini API Free Tier.
 
 ---
 

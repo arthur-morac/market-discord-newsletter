@@ -235,11 +235,8 @@ def fetch_quotes(
     return results
 
 
-def fetch_rss_headlines(query: str, limit: int = 1, days: int = 3) -> list[tuple[str, str]]:
-    url = (
-        f"https://news.google.com/rss/search?"
-        f"q={quote_plus(query)}+when:{days}d&hl=en-US&gl=US&ceid=US:en"
-    )
+def fetch_feed_candidates(url: str, limit: int = 5) -> list[dict]:
+    items: list[dict] = []
     headers = {
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -251,82 +248,201 @@ def fetch_rss_headlines(query: str, limit: int = 1, days: int = 3) -> list[tuple
         resp = requests.get(url, timeout=10, headers=headers)
         resp.raise_for_status()
         root = ET.fromstring(resp.text)
-        items: list[tuple[str, str]] = []
         for item in root.findall("./channel/item")[:limit]:
             title = (item.findtext("title") or "").strip()
             link = (item.findtext("link") or "").strip()
-            if title:
-                items.append((title, link))
-        return items
+            if title and link:
+                items.append({"title": title, "link": link})
     except Exception:
-        return []
+        pass
+    return items
 
 
-def fetch_top_headlines(days: int = 3) -> list[tuple[str, str]]:
-    query = "(Nvidia OR Nasdaq OR CAC 40 OR Bitcoin) market"
-    items = fetch_rss_headlines(query, limit=20, days=days)
+def select_headlines_with_gemini(
+    tech_candidates: list[dict],
+    macro_candidates: list[dict],
+    cac_candidates: list[dict],
+    crypto_candidates: list[dict],
+    api_key: str,
+) -> list[dict] | None:
+    if not api_key:
+        return None
 
-    tech_item = None
-    crypto_item = None
-    macro_item = None
-    fallback_items: list[tuple[str, str]] = []
+    pool = {
+        "tech_candidates": tech_candidates,
+        "macro_candidates": macro_candidates,
+        "cac_candidates": cac_candidates,
+        "crypto_candidates": crypto_candidates,
+    }
 
-    for title, link in items:
-        lower = title.lower()
-        if tech_item is None and any(k in lower for k in ["nvidia", "nasdaq", "tech", "ai", "chip"]):
-            tech_item = (title, link)
-        elif crypto_item is None and any(k in lower for k in ["bitcoin", "crypto", "btc", "eth"]):
-            crypto_item = (title, link)
-        elif macro_item is None and any(k in lower for k in ["cac", "europe", "france", "paris", "fed", "s&p", "wall st"]):
-            macro_item = (title, link)
-        else:
-            fallback_items.append((title, link))
+    prompt = (
+        "You are a chief financial editor. Given the candidate news articles below, select exactly 4 articles—one for each category:\n"
+        "1. category: 'Nasdaq / Tech' (best article on US Big Tech, AI, semiconductors, or Nasdaq)\n"
+        "2. category: 'US Macro' (best article on the Federal Reserve, inflation, interest rates, or Wall Street broad markets)\n"
+        "3. category: 'CAC 40' (best article on the Paris stock market, French blue chips, or European economy)\n"
+        "4. category: 'Crypto' (best article on Bitcoin or cryptocurrency markets)\n\n"
+        "Selection Rules:\n"
+        "- Choose the single most market-moving, impactful headline for each category from its candidate list.\n"
+        "- You must keep the EXACT 'link' from the candidate object.\n"
+        "- You may keep or lightly refine the 'title' for crispness.\n"
+        "- Output MUST be a valid JSON array of 4 objects with keys: 'category', 'title', 'link'.\n"
+        "- Return ONLY the raw JSON array, without any markdown formatting or commentary.\n\n"
+        f"Candidates:\n{json.dumps(pool, ensure_ascii=False)}"
+    )
 
-    selected: list[tuple[str, str]] = []
-    for candidate in [tech_item, macro_item, crypto_item]:
-        if candidate is not None:
-            selected.append(candidate)
+    url = (
+        "https://generativelanguage.googleapis.com/v1beta/models/"
+        f"gemini-2.5-flash:generateContent?key={api_key}"
+    )
 
-    for item in fallback_items:
-        if len(selected) >= 3:
-            break
-        if item not in selected:
-            selected.append(item)
+    try:
+        resp = requests.post(
+            url,
+            json={"contents": [{"parts": [{"text": prompt}]}]},
+            timeout=20,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        raw_text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
 
-    if len(selected) < 3:
-        extra = fetch_rss_headlines("stock market Wall Street", limit=5, days=days)
-        for item in extra:
-            if len(selected) >= 3:
-                break
-            if item not in selected:
-                selected.append(item)
+        if raw_text.startswith("```"):
+            fence_lines = raw_text.split("\n")
+            if fence_lines[0].startswith("```"):
+                fence_lines = fence_lines[1:]
+            if fence_lines and fence_lines[-1].startswith("```"):
+                fence_lines = fence_lines[:-1]
+            raw_text = "\n".join(fence_lines).strip()
 
-    return selected[:3]
+        items = json.loads(raw_text)
+        if isinstance(items, list) and len(items) == 4:
+            valid_items: list[dict] = []
+            for it in items:
+                cat = str(it.get("category", "")).strip()
+                title = str(it.get("title", "")).strip()
+                link = str(it.get("link", "")).strip()
+                if title and link:
+                    valid_items.append({"category": cat, "title": title, "link": link})
+            if len(valid_items) == 4:
+                return valid_items
+    except Exception:
+        pass
+
+    return None
 
 
-def format_headlines_field(items: list[tuple[str, str]], limit: int = 1024) -> str:
-    """Format up to 3 headlines as clickable markdown links within Discord's 1024-char limit."""
-    selected = items[:3]
-    if not selected:
+def fetch_top_headlines(api_key: str = "") -> list[dict]:
+    tech_candidates = fetch_feed_candidates(
+        "https://www.cnbc.com/id/19854910/device/rss/rss.html", limit=5
+    )
+    macro_candidates = fetch_feed_candidates(
+        "https://www.cnbc.com/id/20910258/device/rss/rss.html", limit=5
+    )
+    cac_candidates = fetch_feed_candidates(
+        "https://www.lefigaro.fr/rss/figaro_economie.xml", limit=5
+    )
+    crypto_candidates = fetch_feed_candidates(
+        "https://www.coindesk.com/arc/outboundfeeds/rss/", limit=5
+    )
+
+    if not tech_candidates:
+        tech_candidates = fetch_feed_candidates(
+            "https://www.cnbc.com/id/100003114/device/rss/rss.html", limit=5
+        )
+    if not macro_candidates:
+        macro_candidates = fetch_feed_candidates(
+            "https://www.cnbc.com/id/100003114/device/rss/rss.html", limit=5
+        )
+    if not cac_candidates:
+        cac_candidates = fetch_feed_candidates(
+            "https://news.google.com/rss/headlines/section/topic/BUSINESS?hl=fr&gl=FR&ceid=FR:fr",
+            limit=5,
+        )
+    if not crypto_candidates:
+        crypto_candidates = fetch_feed_candidates(
+            "https://cointelegraph.com/rss", limit=5
+        )
+
+    if api_key:
+        gemini_result = select_headlines_with_gemini(
+            tech_candidates,
+            macro_candidates,
+            cac_candidates,
+            crypto_candidates,
+            api_key,
+        )
+        if gemini_result and len(gemini_result) == 4:
+            return gemini_result
+
+    fallback_selected: list[dict] = []
+    if tech_candidates:
+        first_tech = tech_candidates[0]
+        fallback_selected.append(
+            {
+                "category": "Nasdaq / Tech",
+                "title": first_tech["title"],
+                "link": first_tech["link"],
+            }
+        )
+    if macro_candidates:
+        first_macro = macro_candidates[0]
+        fallback_selected.append(
+            {
+                "category": "US Macro",
+                "title": first_macro["title"],
+                "link": first_macro["link"],
+            }
+        )
+    if cac_candidates:
+        first_cac = cac_candidates[0]
+        fallback_selected.append(
+            {
+                "category": "CAC 40",
+                "title": first_cac["title"],
+                "link": first_cac["link"],
+            }
+        )
+    if crypto_candidates:
+        first_crypto = crypto_candidates[0]
+        fallback_selected.append(
+            {
+                "category": "Crypto",
+                "title": first_crypto["title"],
+                "link": first_crypto["link"],
+            }
+        )
+
+    return fallback_selected
+
+
+def format_headlines_field(items: list[dict], limit: int = 1024) -> str:
+    """Format up to 4 headlines as clickable markdown links within Discord's 1024-char limit."""
+    if not items:
         return "No headlines available."
 
-    # Reserve budget per item so all 3 clickable links always fit under 1024 chars
-    max_per_item = (limit - (len(selected) - 1)) // len(selected)
+    selected = items[:4]
     lines: list[str] = []
-    for title, link in selected:
-        if link:
-            overhead = len("• []()") + len(link)
-            max_title = max(25, max_per_item - overhead)
-            short_title = (
-                title if len(title) <= max_title else title[: max_title - 3] + "..."
-            )
-            candidate = f"• [{short_title}]({link})"
-            # Fallback to plain title if link itself is unusually long
-            if len(candidate) > max_per_item:
-                candidate = f"• {title[: max_per_item - 5]}..."
-            lines.append(candidate)
+    max_per_item = (limit - 10) // len(selected)
+
+    for it in selected:
+        cat = str(it.get("category", "")).strip()
+        title = str(it.get("title", "")).strip()
+        link = str(it.get("link", "")).strip()
+
+        prefix = f"• **{cat}** : " if cat else "• "
+        overhead = len(prefix) + len("[]()") + len(link)
+        max_title = max(25, max_per_item - overhead)
+
+        if len(title) > max_title:
+            short_title = title[: max_title - 3] + "..."
         else:
-            lines.append(f"• {title[: max_per_item - 2]}")
+            short_title = title
+
+        if link:
+            line = f"{prefix}[{short_title}]({link})"
+        else:
+            line = f"{prefix}{short_title}"
+
+        lines.append(line)
 
     return truncate_field(lines, limit=limit)
 
@@ -422,8 +538,11 @@ def build_discord_payload() -> dict:
     cac_top3 = cac_sorted[:3]
     cac_flop3 = list(reversed(cac_sorted[-3:])) if len(cac_sorted) >= 3 else []
 
-    headline_items = fetch_top_headlines(days=news_days)
-    headline_titles = [t for t, _ in headline_items]
+    api_key = os.getenv("GEMINI_API_KEY", "").strip()
+    headline_items = fetch_top_headlines(api_key=api_key)
+    headline_titles = [
+        f"{it.get('category', '')}: {it.get('title', '')}" for it in headline_items
+    ]
     ai_summary = maybe_generate_ai_summary(
         indices, tech_sorted, cac_top3, cac_flop3, cryptos, headline_titles
     )
@@ -557,7 +676,7 @@ def build_discord_payload() -> dict:
     if headline_items:
         fields.append(
             {
-                "name": "📰 Top 3 Headlines" if not is_friday else "📰 Top 3 Headlines of the Week",
+                "name": "📰 Top 4 Headlines" if not is_friday else "📰 Top 4 Headlines of the Week",
                 "value": format_headlines_field(headline_items),
                 "inline": False,
             }

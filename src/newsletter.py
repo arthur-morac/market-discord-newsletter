@@ -455,7 +455,7 @@ def call_gemini_api(prompt: str, api_key: str) -> str | None:
     if not api_key:
         return None
 
-    model_candidates = ["gemini-3.8-flash", "gemini-3.5-flash", "gemini-2.5-flash"]
+    model_candidates = ["gemini-3.8-flash-lite", "gemini-3.8-flash", "gemini-3.6-flash"]
     payload = {"contents": [{"parts": [{"text": prompt}]}]}
 
     for model_name in model_candidates:

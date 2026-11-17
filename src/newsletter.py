@@ -332,34 +332,34 @@ def select_headlines_with_gemini(
 
 def fetch_top_headlines(api_key: str = "") -> list[dict]:
     tech_candidates = fetch_feed_candidates(
-        "https://www.cnbc.com/id/19854910/device/rss/rss.html", limit=5
+        "https://www.cnbc.com/id/19854910/device/rss/rss.html", limit=4
     )
     macro_candidates = fetch_feed_candidates(
-        "https://www.cnbc.com/id/20910258/device/rss/rss.html", limit=5
+        "https://www.cnbc.com/id/20910258/device/rss/rss.html", limit=4
     )
     cac_candidates = fetch_feed_candidates(
-        "https://www.lefigaro.fr/rss/figaro_economie.xml", limit=5
+        "https://news.google.com/rss/search?q=site:investir.lesechos.fr+CAC+40+when:2d&hl=fr&gl=FR&ceid=FR:fr",
+        limit=4,
     )
     crypto_candidates = fetch_feed_candidates(
-        "https://www.coindesk.com/arc/outboundfeeds/rss/", limit=5
+        "https://www.coindesk.com/arc/outboundfeeds/rss/", limit=4
     )
 
     if not tech_candidates:
         tech_candidates = fetch_feed_candidates(
-            "https://www.cnbc.com/id/100003114/device/rss/rss.html", limit=5
+            "https://www.cnbc.com/id/100003114/device/rss/rss.html", limit=4
         )
     if not macro_candidates:
         macro_candidates = fetch_feed_candidates(
-            "https://www.cnbc.com/id/100003114/device/rss/rss.html", limit=5
+            "https://www.cnbc.com/id/100003114/device/rss/rss.html", limit=4
         )
     if not cac_candidates:
         cac_candidates = fetch_feed_candidates(
-            "https://news.google.com/rss/headlines/section/topic/BUSINESS?hl=fr&gl=FR&ceid=FR:fr",
-            limit=5,
+            "https://www.lefigaro.fr/rss/figaro_economie.xml", limit=4
         )
     if not crypto_candidates:
         crypto_candidates = fetch_feed_candidates(
-            "https://cointelegraph.com/rss", limit=5
+            "https://cointelegraph.com/rss", limit=4
         )
 
     if api_key:

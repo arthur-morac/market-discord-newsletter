@@ -2,11 +2,11 @@ name: Market & Crypto Discord Newsletter
 
 on:
   schedule:
-    # Clôture Nasdaq = 13:00 heure de San Francisco (16:00 ET) — Du Lundi au Vendredi
-    # Multi-essais toutes les 15 min de 13:20 à 15:00 PT pour parer aux retards/pertes de GitHub Actions
-    # Heure d'été (PDT, UTC-7) : 20:20 à 22:50 UTC
-    # Heure d'hiver (PST, UTC-8) : 21:20 à 22:50 UTC (les runs avant 13:00 PT sont ignorés automatiquement)
-    - cron: "20,35,50 20,21,22 * * 1-5"
+    # Nasdaq closes at 13:00 PT (San Francisco).
+    # Spread retries from 13:17 PT to 23:17 PT (Mon-Fri PT) across PDT (UTC-7) and PST (UTC-8).
+    # Off-peak minutes (:17, :43) avoid top-of-hour GitHub Actions queue congestion.
+    - cron: "17,43 20,21,22,23 * * 1-5"
+    - cron: "17 0,2,4,6 * * 2-6"
   workflow_dispatch:
     inputs:
       force:
@@ -17,6 +17,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: market-discord-newsletter
+  cancel-in-progress: false
+
 jobs:
   send-newsletter:
     runs-on: ubuntu-latest
@@ -24,16 +28,20 @@ jobs:
     steps:
       - name: Check schedule window and idempotency
         id: check_run
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           SF_DATE=$(TZ="America/Los_Angeles" date +%Y-%m-%d)
           SF_HOUR=$(TZ="America/Los_Angeles" date +%H | sed 's/^0//')
           SF_HOUR=${SF_HOUR:-0}
-          REPO_URL="https://github.com/${{ github.repository }}.git"
+          SF_DOW=$(TZ="America/Los_Angeles" date +%u)
+          REPO_URL="https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}.git"
 
           echo "San Francisco date: $SF_DATE"
           echo "San Francisco hour: $SF_HOUR"
+          echo "San Francisco day of week (1=Mon..7=Sun): $SF_DOW"
 
-          # 1. Gestion des déclenchements manuels
+          # 1. Handle manual triggers
           if [ "${{ github.event_name }}" != "schedule" ]; then
             if [ "${{ inputs.force }}" = "true" ]; then
               echo "Manual trigger with force=true: proceeding."
@@ -51,21 +59,21 @@ jobs:
             exit 0
           fi
 
-          # 2. Ne jamais exécuter avant la clôture du Nasdaq (13:00 PT)
+          # 2. Only run on weekdays in San Francisco time (Mon-Fri)
+          if [ "$SF_DOW" -gt 5 ]; then
+            echo "Skipping: weekend in San Francisco (day $SF_DOW)."
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # 3. Never run before Nasdaq close (13:00 PT)
           if [ "$SF_HOUR" -lt 13 ]; then
             echo "Skipping: market not closed yet (< 13:00 PT)."
             echo "should_run=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          # 3. Ne pas exécuter si le retard dépasse 22:00 PT
-          if [ "$SF_HOUR" -ge 22 ]; then
-            echo "Skipping: run delayed past 22:00 PT."
-            echo "should_run=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          # 4. Vérification d'idempotence via tag Git (évite tout doublon)
+          # 4. Idempotency check via Git tag (prevents duplicates across all retries)
           TAG_CHECK=$(git ls-remote --tags "$REPO_URL" "refs/tags/sent-$SF_DATE" 2>/dev/null || true)
           if echo "$TAG_CHECK" | grep -q "sent-$SF_DATE"; then
             echo "Newsletter for $SF_DATE already sent today! Skipping to avoid duplicate."

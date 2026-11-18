@@ -10,6 +10,7 @@ import argparse
 import json
 import os
 import sys
+import time
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -455,7 +456,12 @@ def call_gemini_api(prompt: str, api_key: str) -> str | None:
     if not api_key:
         return None
 
-    model_candidates = ["gemini-3.8-flash-lite", "gemini-3.8-flash", "gemini-3.6-flash"]
+    model_candidates = [
+        "gemini-3.8-flash",
+        "gemini-3.6-flash",
+        "gemma-4-31b-it",
+        "gemma-4-26b-a4b-it",
+    ]
     payload = {"contents": [{"parts": [{"text": prompt}]}]}
 
     for model_name in model_candidates:
@@ -463,22 +469,45 @@ def call_gemini_api(prompt: str, api_key: str) -> str | None:
             f"https://generativelanguage.googleapis.com/v1beta/models/"
             f"{model_name}:generateContent?key={api_key}"
         )
-        try:
-            resp = requests.post(url, json=payload, timeout=20)
-            if resp.status_code == 200:
-                data = resp.json()
-                candidates_list = data.get("candidates")
-                if candidates_list:
-                    parts = candidates_list[0].get("content", {}).get("parts", [])
-                    if parts:
-                        text = parts[0].get("text", "").strip()
-                        if text:
-                            print(f"Gemini API request succeeded with {model_name}.")
-                            return text
-            else:
-                print(f"Gemini API ({model_name}) returned HTTP {resp.status_code}: {resp.text[:200]}")
-        except Exception as e:
-            print(f"Gemini API ({model_name}) error: {e}")
+        max_attempts = 2
+        attempt = 0
+        while attempt < max_attempts:
+            attempt = attempt + 1
+            try:
+                resp = requests.post(url, json=payload, timeout=45)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    candidates_list = data.get("candidates")
+                    if candidates_list:
+                        first_candidate = candidates_list[0]
+                        content_obj = first_candidate.get("content", {})
+                        parts = content_obj.get("parts", [])
+                        if parts:
+                            text = parts[0].get("text", "").strip()
+                            if text:
+                                print(f"Gemini API request succeeded with {model_name}.")
+                                return text
+                    break
+                elif resp.status_code == 429 or resp.status_code == 503:
+                    print(
+                        f"Gemini API ({model_name}) temporary HTTP {resp.status_code} "
+                        f"(attempt {attempt}/{max_attempts}): {resp.text[:200]}"
+                    )
+                    if attempt < max_attempts:
+                        time.sleep(3)
+                else:
+                    print(
+                        f"Gemini API ({model_name}) returned HTTP {resp.status_code}: "
+                        f"{resp.text[:200]}"
+                    )
+                    break
+            except Exception as e:
+                print(
+                    f"Gemini API ({model_name}) error "
+                    f"(attempt {attempt}/{max_attempts}): {e}"
+                )
+                if attempt < max_attempts:
+                    time.sleep(3)
 
     return None
 
@@ -980,7 +1009,44 @@ def main() -> int:
         )
         return 1
 
-    resp = requests.post(webhook_url, json=payload, timeout=15)
+    post_url = webhook_url
+    if "wait=" not in post_url:
+        if "?" in post_url:
+            post_url = post_url + "&wait=true"
+        else:
+            post_url = post_url + "?wait=true"
+
+    resp = None
+    max_attempts = 3
+    attempt = 0
+    while attempt < max_attempts:
+        attempt = attempt + 1
+        try:
+            resp = requests.post(post_url, json=payload, timeout=20)
+            if resp.status_code < 400:
+                break
+            if resp.status_code == 429 or resp.status_code >= 500:
+                print(
+                    f"Discord temporary error ({resp.status_code}) on attempt "
+                    f"{attempt}/{max_attempts}: {resp.text[:200]}",
+                    file=sys.stderr,
+                )
+                if attempt < max_attempts:
+                    time.sleep(5)
+            else:
+                break
+        except Exception as e:
+            print(
+                f"Discord request exception on attempt {attempt}/{max_attempts}: {e}",
+                file=sys.stderr,
+            )
+            if attempt < max_attempts:
+                time.sleep(5)
+
+    if resp is None:
+        print("Discord error: no response received after retries.", file=sys.stderr)
+        return 1
+
     if resp.status_code >= 400:
         print(
             f"Discord error ({resp.status_code}): {resp.text}",
@@ -988,7 +1054,22 @@ def main() -> int:
         )
         return 1
 
-    print(f"Newsletter sent to Discord successfully (HTTP {resp.status_code}).")
+    msg_id = ""
+    chan_id = ""
+    try:
+        resp_data = resp.json()
+        msg_id = str(resp_data.get("id", ""))
+        chan_id = str(resp_data.get("channel_id", ""))
+    except Exception:
+        pass
+
+    if msg_id:
+        print(
+            f"Newsletter sent to Discord successfully (HTTP {resp.status_code}, "
+            f"message_id={msg_id}, channel_id={chan_id})."
+        )
+    else:
+        print(f"Newsletter sent to Discord successfully (HTTP {resp.status_code}).")
     return 0
 
 
